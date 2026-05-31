@@ -1,0 +1,26 @@
+services:
+  splunk:
+    image: splunk/splunk:latest
+    container_name: symphunk-splunk
+    environment:
+      SPLUNK_START_ARGS: "--accept-license"
+      SPLUNK_GENERAL_TERMS: "--accept-sgt-current-at-splunk-com"
+      SPLUNK_PASSWORD: "${SPLUNK_PASSWORD:-changeme123!}"
+    ports:
+      - "8000:8000"   # Splunk Web UI
+      - "8088:8088"   # HEC (telemetry ingest — DD8)
+      - "8089:8089"   # REST API (KV Store, dashboard deploy)
+    volumes:
+      - splunk-var:/opt/splunk/var
+      - splunk-etc:/opt/splunk/etc
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/en-US/account/login"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  splunk-var:
+  splunk-etc:
