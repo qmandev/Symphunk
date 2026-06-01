@@ -217,4 +217,4 @@ Eight architectural decisions drive the implementation — see [`splunkAgenticOp
 
 ## License
 
-MIT
+Apache 2.0
