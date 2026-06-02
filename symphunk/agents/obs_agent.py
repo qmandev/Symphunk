@@ -4,7 +4,6 @@ import logging
 import re
 
 from symphunk.agents.base import BaseAgent
-from symphunk.harness.skills import load_all
 from symphunk.orchestrator.state import IncidentStatus
 
 logger = logging.getLogger(__name__)
@@ -16,7 +15,6 @@ class ObsAgent(BaseAgent):
     async def run(self) -> dict:
         logger.info("ObsAgent starting incident=%s severity=%s", self.incident_id, self.incident.get("severity"))
 
-        skills = load_all("obs")
         result = await self._engine.run(
             self._build_prompt(),
             severity=self.incident.get("severity", "low"),

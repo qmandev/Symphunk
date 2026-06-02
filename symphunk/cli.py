@@ -19,19 +19,38 @@ def cli() -> None:
 @cli.command()
 def run() -> None:
     """Start the orchestrator polling loop."""
+    from symphunk.config import settings
     from symphunk.splunk.kvstore import KVStore
+    from symphunk.harness.mcp_client import MCPClient
+    from symphunk.harness.tools import ToolRegistry
+    from symphunk.harness.skills import load_all
+    from symphunk.harness.engine import Engine
+    from symphunk.harness.budget import SearchBudget
+    from symphunk.agents.obs_agent import ObsAgent
     from symphunk.orchestrator.poller import Poller
     from symphunk.orchestrator.dispatcher import Dispatcher
 
     async def _run() -> None:
         kv = KVStore()
-        poller = Poller(kv)
-        dispatcher = Dispatcher(kv)
+        async with MCPClient(settings.mcp_url, settings.mcp_token) as mcp:
+            registry = ToolRegistry()
+            registry.from_mcp(mcp.tool_schemas())
+            skills = load_all("obs")
+            click.echo(f"MCP connected — {len(registry)} tools, {len(skills)} skills loaded")
 
-        async def on_incident(incident: dict) -> None:
-            await dispatcher.dispatch(incident, _agent_factory)
+            poller = Poller(kv)
+            dispatcher = Dispatcher(kv)
 
-        await poller.run_forever(on_incident)
+            def make_agent(incident: dict) -> ObsAgent:
+                budget = SearchBudget(max_searches=settings.max_searches_per_run)
+                engine = Engine(
+                    mcp, registry, skills,
+                    incident_id=incident.get("id", ""),
+                    budget=budget,
+                )
+                return ObsAgent(incident, engine, kv)
+
+            await poller.run_forever(lambda inc: dispatcher.dispatch(inc, make_agent))
 
     asyncio.run(_run())
 
@@ -92,5 +111,3 @@ def deploy_dashboard() -> None:
     asyncio.run(_deploy())
 
 
-def _agent_factory(incident: dict):
-    raise NotImplementedError("Agent factory not wired — implement in Phase 3")

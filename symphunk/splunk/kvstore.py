@@ -41,9 +41,16 @@ class KVStore:
         return r.json()
 
     async def upsert(self, collection: str, record: dict, *, key_field: str = "_key") -> None:
+        # Use batch_save for reliable upsert: creates if _key absent, updates if present.
+        save_record = {**record}
         key = record.get(key_field)
-        url = f"{_DATA_BASE}/{collection}/{key}" if key else f"{_DATA_BASE}/{collection}"
-        r = await self._client.post(url, content=json.dumps(record), headers={"Content-Type": "application/json"})
+        if key and key_field != "_key":
+            save_record["_key"] = key  # promote custom id field to Splunk _key
+        r = await self._client.post(
+            f"{_DATA_BASE}/{collection}/batch_save",
+            content=json.dumps([save_record]),
+            headers={"Content-Type": "application/json"},
+        )
         r.raise_for_status()
 
     async def delete_by_key(self, collection: str, *, key_field: str, key_value: str) -> None:

@@ -2,7 +2,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-_MAX_RATE_PER_WINDOW = 5
+_MAX_RATE_PER_WINDOW = 10
 _RATE_WINDOW_SECONDS = 60
 _MAX_TIME_WINDOW_DAYS = 7
 
@@ -17,7 +17,10 @@ class SearchBudget:
     def check(self, *, expensive: bool = False) -> None:
         """Raise if over budget; otherwise consume one search slot."""
         if self._used >= self.max_searches:
-            raise BudgetExhausted(f"Search cap reached ({self.max_searches}/run)")
+            raise BudgetExhausted(
+                f"[BUDGET] Search cap reached ({self.max_searches}/run). "
+                "No further searches allowed — conclude with current evidence."
+            )
 
         now = time.monotonic()
         if now - self._window_start >= _RATE_WINDOW_SECONDS:
@@ -27,9 +30,11 @@ class SearchBudget:
         # Expensive searches (full-scan, no tstats) count double against rate limit
         limit = _MAX_RATE_PER_WINDOW // 2 if expensive else _MAX_RATE_PER_WINDOW
         if self._window_count >= limit:
+            hint = " Prefer tstats queries or conclude with current evidence." if expensive else ""
             raise RateLimitBackoff(
-                f"Rate limit: {limit} searches per {_RATE_WINDOW_SECONDS}s"
-                + (" (expensive)" if expensive else "")
+                f"[BUDGET] Rate limit: {limit} searches per {_RATE_WINDOW_SECONDS}s"
+                + (" (no tstats — counts double)." if expensive else ".")
+                + hint
             )
 
         self._used += 1

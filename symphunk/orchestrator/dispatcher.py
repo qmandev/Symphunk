@@ -32,5 +32,10 @@ class Dispatcher:
                 await agent.run()
             except Exception:
                 logger.exception("Agent failed for incident id=%s", incident.get("id"))
+                await self._kv.upsert(
+                    "symphunk_incidents",
+                    {**incident, "status": IncidentStatus.ESCALATED, "escalation_reason": "agent_error"},
+                    key_field="id",
+                )
             finally:
                 self._active -= 1
