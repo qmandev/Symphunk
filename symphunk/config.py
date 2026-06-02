@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     mcp_token: str = Field(default="", description="Encrypted MCP token")
 
     # HEC (port 8088)
-    hec_url: str = "http://localhost:8088"
+    hec_url: str = "https://localhost:8088"
     hec_token: str = Field(default="", description="HEC token (symphunk-hec)")
 
     # Anthropic

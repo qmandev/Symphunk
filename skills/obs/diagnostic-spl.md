@@ -38,6 +38,18 @@ index=summary sourcetype=<summary_sourcetype> earliest=-1h latest=now()
 | stats sum(count) BY orig_host
 ```
 
+## symphunk_demo index
+
+The demo environment uses `index=symphunk_demo` with `sourcetype="_json"`.
+Fields: `host`, `service`, `cpu_pct`, `mem_pct`, `req_per_sec`, `error_count`.
+
+```spl
+index=symphunk_demo earliest=-30m latest=now()
+| stats max(cpu_pct) AS peak_cpu avg(req_per_sec) AS avg_rps sum(error_count) AS errors
+  BY host service
+| sort -peak_cpu
+```
+
 ## Generating Novel SPL
 For queries not covered by these templates, use `saia_generate_spl` with a clear natural-language description.
 Example: "Generate SPL to find hosts where CPU utilisation exceeded 90% in the last hour using the Infrastructure data model."

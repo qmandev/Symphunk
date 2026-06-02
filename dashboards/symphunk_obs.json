@@ -1,7 +1,95 @@
 {
   "title": "Symphunk — Observability Proof-of-Work",
-  "description": "Evidence dashboard for ObsAgent incident investigations",
-  "visualizations": {},
-  "dataSources": {},
-  "layout": {}
+  "description": "Live evidence from Symphunk's ObsAgent: one orchestrator, many agents, one Splunk.",
+  "defaults": {
+    "dataSources": {
+      "ds.search": {
+        "options": {
+          "queryParameters": { "earliest": "-7d", "latest": "now" }
+        }
+      }
+    }
+  },
+  "dataSources": {
+    "ds_incidents": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:evidence\" | eval Status=case(status==\"Resolved\",\"Resolved ✓\",status==\"Escalated\",\"Escalated ⚠\",1=1,status) | eval Confidence=round(confidence,2) | rename title AS Title, severity AS Severity, recommended_action AS Action | eval Time=strftime(_time,\"%Y-%m-%d %H:%M:%S\") | table Time, Title, Severity, Status, Confidence, Action | sort - Time | head 20"
+      }
+    },
+    "ds_total": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:evidence\" | stats count AS Total"
+      }
+    },
+    "ds_resolved": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:evidence\" status=Resolved | stats count AS \"Auto-Resolved\""
+      }
+    },
+    "ds_confidence": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:evidence\" | stats avg(confidence) AS c | eval \"Avg Confidence\"=round(c,2) | fields \"Avg Confidence\""
+      }
+    },
+    "ds_escalated": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:evidence\" status=Escalated | stats count AS Escalated"
+      }
+    }
+  },
+  "visualizations": {
+    "viz_header": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## Symphunk — One Conductor, Many Agents, One Splunk\n\nProof-of-work: Splunk alerts → `symphunk_ingest` action → KV incidents → ObsAgent investigates via MCP tools → evidence + confidence score → auto-resolve or escalate. All state lives in Splunk."
+      }
+    },
+    "viz_total": {
+      "type": "splunk.singlevalue",
+      "title": "Incidents Processed",
+      "dataSources": { "primary": "ds_total" },
+      "options": { "majorFontSize": 48, "backgroundColor": "transparent" }
+    },
+    "viz_resolved": {
+      "type": "splunk.singlevalue",
+      "title": "Auto-Resolved",
+      "dataSources": { "primary": "ds_resolved" },
+      "options": { "majorFontSize": 48, "backgroundColor": "transparent" }
+    },
+    "viz_confidence": {
+      "type": "splunk.singlevalue",
+      "title": "Avg Confidence",
+      "dataSources": { "primary": "ds_confidence" },
+      "options": { "majorFontSize": 48, "backgroundColor": "transparent" }
+    },
+    "viz_escalated": {
+      "type": "splunk.singlevalue",
+      "title": "Escalated",
+      "dataSources": { "primary": "ds_escalated" },
+      "options": { "majorFontSize": 48, "backgroundColor": "transparent" }
+    },
+    "viz_incidents": {
+      "type": "splunk.table",
+      "title": "Investigation Results",
+      "dataSources": { "primary": "ds_incidents" },
+      "options": { "count": 20 }
+    }
+  },
+  "layout": {
+    "type": "grid",
+    "options": { "width": 1440, "gutterSize": 8, "columnCount": 24 },
+    "structure": [
+      { "item": "viz_header",     "position": {"x": 0,  "y": 0,   "w": 24, "h": 80}  },
+      { "item": "viz_total",      "position": {"x": 0,  "y": 88,  "w": 6,  "h": 100} },
+      { "item": "viz_resolved",   "position": {"x": 6,  "y": 88,  "w": 6,  "h": 100} },
+      { "item": "viz_confidence", "position": {"x": 12, "y": 88,  "w": 6,  "h": 100} },
+      { "item": "viz_escalated",  "position": {"x": 18, "y": 88,  "w": 6,  "h": 100} },
+      { "item": "viz_incidents",  "position": {"x": 0,  "y": 196, "w": 24, "h": 380} }
+    ]
+  }
 }

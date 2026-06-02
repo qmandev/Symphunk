@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 class HEC:
     def __init__(self) -> None:
         self._client = httpx.AsyncClient(
+            verify=False,  # self-signed cert in Docker
             headers={"Authorization": f"Splunk {settings.hec_token}"},
         )
 
