@@ -16,6 +16,7 @@ class SplunkREST:
         self._client = httpx.AsyncClient(
             verify=False,  # self-signed cert in Docker
             headers={"Authorization": f"Bearer {settings.splunk_token}"},
+            timeout=30.0,
         )
 
     async def get(self, path: str, **params) -> dict:

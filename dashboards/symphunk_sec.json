@@ -32,7 +32,7 @@
     "ds_score": {
       "type": "ds.search",
       "options": {
-        "query": "search index=summary source=\"symphunk:sec_evidence\" | stats avg(threat_score) AS s | eval \"Avg Score\"=round(s,2) | fields \"Avg Score\""
+        "query": "search index=summary source=\"symphunk:sec_evidence\" | stats avg(threat_score) AS s | eval AvgScore=round(s*100) | fields AvgScore"
       }
     },
     "ds_escalated": {
@@ -59,7 +59,7 @@
       "type": "splunk.singlevalue",
       "title": "Avg Threat Score",
       "dataSources": { "primary": "ds_score" },
-      "options": { "majorFontSize": 48, "backgroundColor": "transparent" }
+      "options": { "majorFontSize": 48, "backgroundColor": "transparent", "unit": "%" }
     },
     "viz_escalated": {
       "type": "splunk.singlevalue",

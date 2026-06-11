@@ -14,31 +14,31 @@
     "ds_incidents": {
       "type": "ds.search",
       "options": {
-        "query": "search index=summary source=\"symphunk:evidence\" | eval Status=case(status==\"Resolved\",\"Resolved ✓\",status==\"Escalated\",\"Escalated ⚠\",1=1,status) | eval Confidence=round(confidence,2) | rename title AS Title, severity AS Severity, recommended_action AS Action | eval Time=strftime(_time,\"%Y-%m-%d %H:%M:%S\") | table Time, Title, Severity, Status, Confidence, Action | sort - Time | head 20"
+        "query": "search index=summary source=\"symphunk:evidence\" NOT title=\"Auth anomaly*\" | eval Status=case(status==\"Resolved\",\"Resolved ✓\",status==\"Escalated\",\"Escalated ⚠\",1=1,status) | eval Confidence=round(confidence,2) | rename title AS Title, severity AS Severity, recommended_action AS Action | eval Time=strftime(_time,\"%Y-%m-%d %H:%M:%S\") | table Time, Title, Severity, Status, Confidence, Action | sort - Time | head 20"
       }
     },
     "ds_total": {
       "type": "ds.search",
       "options": {
-        "query": "search index=summary source=\"symphunk:evidence\" | stats count AS Total"
+        "query": "search index=summary source=\"symphunk:evidence\" NOT title=\"Auth anomaly*\" | stats count AS Total"
       }
     },
     "ds_resolved": {
       "type": "ds.search",
       "options": {
-        "query": "search index=summary source=\"symphunk:evidence\" status=Resolved | stats count AS \"Auto-Resolved\""
+        "query": "search index=summary source=\"symphunk:evidence\" NOT title=\"Auth anomaly*\" status=Resolved | stats count AS \"Auto-Resolved\""
       }
     },
     "ds_confidence": {
       "type": "ds.search",
       "options": {
-        "query": "search index=summary source=\"symphunk:evidence\" | stats avg(confidence) AS c | eval \"Avg Confidence\"=round(c,2) | fields \"Avg Confidence\""
+        "query": "search index=summary source=\"symphunk:evidence\" NOT title=\"Auth anomaly*\" | stats avg(confidence) AS c | eval AvgConf=round(c*100) | fields AvgConf"
       }
     },
     "ds_escalated": {
       "type": "ds.search",
       "options": {
-        "query": "search index=summary source=\"symphunk:evidence\" status=Escalated | stats count AS Escalated"
+        "query": "search index=summary source=\"symphunk:evidence\" NOT title=\"Auth anomaly*\" status=Escalated | stats count AS Escalated"
       }
     }
   },
@@ -59,7 +59,7 @@
       "type": "splunk.singlevalue",
       "title": "Avg Confidence",
       "dataSources": { "primary": "ds_confidence" },
-      "options": { "majorFontSize": 48, "backgroundColor": "transparent" }
+      "options": { "majorFontSize": 48, "backgroundColor": "transparent", "unit": "%" }
     },
     "viz_escalated": {
       "type": "splunk.singlevalue",

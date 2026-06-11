@@ -11,32 +11,37 @@ Symphunk is an agentic AI operations layer for Splunk built for the [Splunk Agen
 ## How It Works
 
 ```
-Splunk saved search (anomaly detection SPL)
+Splunk saved search (obs: CPU anomaly SPL  |  sec: auth-anomaly SPL)
   │  alert fires
   ▼
-symphunk_ingest alert action  ──►  KV Store symphunk_incidents  (status=New)
+symphunk_ingest alert action  ──►  KV Store symphunk_incidents  (status=New, agent_type=obs|sec)
                                           │
                                    ┌──────▼──────────────────────────────┐
                                    │  Orchestrator  (asyncio poll loop)  │
                                    │  poller → concurrency gate          │
                                    │  → state: New → Investigating       │
+                                   │  → routes by agent_type             │
                                    └──────┬──────────────────────────────┘
-                                          │  one task / incident
-                                   ┌──────▼──────────────────────────────┐
-                                   │  ObsAgent  (Claude + harness)        │
-                                   │  load skills → run SPL via MCP      │
-                                   │  → correlate → evidence + confidence │
-                                   └──┬──────────────────────────────┬───┘
-                    read: 14 MCP tools                     write: KV + HEC telemetry
-                    (splunk_*/saia_*)                              │
-                          ▼                                        ▼
-                  Splunk Enterprise                    index=summary → Dashboard Studio
-                  index=symphunk_demo              (4 KPI tiles + Investigation Results table)
-                                                   status=Resolved ✓  or  Escalated ⚠
+                               ┌──────────┴──────────┐
+                        agent_type=obs         agent_type=sec
+                               │                     │
+                        ┌──────▼──────┐       ┌──────▼──────┐
+                        │  ObsAgent   │       │  SecAgent   │
+                        │  metric     │       │  IOC enrich │
+                        │  anomaly    │       │  lateral    │
+                        │  triage     │       │  movement   │
+                        └──────┬──────┘       └──────┬──────┘
+                               └──────────┬──────────┘
+                                          │  shared: 14 MCP tools, budget, hooks
+                    read: splunk_*/saia_* │              write: KV + HEC telemetry
+                          ▼              │                        ▼
+                  Splunk Enterprise      │           index=summary → Dashboard Studio
+                  (symphunk_demo /       │           symphunk_obs  |  symphunk_sec
+                   symphunk_sec_demo)    │           status=Resolved ✓  or  Escalated ⚠
 ```
 
 **Splunk AI capabilities used:**
-- **Splunk MCP Server** (v1.2.0) — 14 tools (`splunk_*` + `saia_*`) form the entire read backbone
+- **Splunk MCP Server** (v1.2.0) — 14 tools (`splunk_*` + `saia_*`) form the entire read backbone for both ObsAgent and SecAgent
 - **SAIA** (`saia_generate_spl`, `saia_optimize_spl`, `saia_explain_spl`, `saia_ask_splunk_question`) — hybrid SPL strategy: curated skill templates for hot-path queries, `saia_generate_spl` for novel/exploratory ones
 - **Splunk Developer License** (10 GB/day) + Splunk AI Toolkit
 
@@ -86,56 +91,83 @@ uv run symphunk deploy-dashboard
 
 ## Demo Run (end-to-end)
 
-After setup, a single scripted run demonstrates the full agentic pipeline:
+Symphunk ships two demo scenarios that run against the same orchestrator simultaneously.
+
+### Observability track (CPU anomaly)
 
 ```bash
-# 1. Inject the deterministic CPU-spike anomaly scenario (30 events: baseline + anomaly)
+# 1. Inject the deterministic CPU-spike scenario (30 events)
 uv run symphunk load-sample-data
 
-# 2. Dispatch the saved-search alert manually (fires the alert action → incident in KV)
+# 2. Dispatch the alert manually
 curl -sk -u admin:${SPLUNK_PASSWORD} -X POST \
   "https://localhost:8089/services/saved/searches/symphunk_obs_demo/dispatch" \
   -d "dispatch.now=true&force_dispatch=true&trigger_actions=1"
 
-# 3. Start the orchestrator — ObsAgent picks up the incident, investigates, resolves
+# 3. Start the orchestrator
 uv run symphunk run
 ```
 
-What you'll see in the terminal:
+Expected terminal output:
 ```
-INFO  MCP connected — 14 tools, 3 skills loaded
-INFO  Poller found 1 incident(s) with status=New
+INFO  MCP connected — 14 tools, 3 obs skills, 3 sec skills loaded
 INFO  ObsAgent starting incident=<id> severity=medium
-INFO  [tool] splunk_run_query → per-host CPU summary
-INFO  [tool] splunk_run_query → z-score timeline
-INFO  [tool] saia_generate_spl → cascade correlation query
-INFO  [tool] splunk_run_query → cascade results
 INFO  ObsAgent done incident=<id> status=Resolved confidence=0.82
 ```
 
-Then open the dashboard: **http://localhost:8000/en-US/app/search/symphunk_obs**
+Dashboard: **http://localhost:8000/en-US/app/search/symphunk_obs** — Incidents: 1 · Auto-Resolved: 1 · Avg Confidence: 0.82
 
-| Tile | Value |
-|---|---|
-| Incidents Processed | 1 |
-| Auto-Resolved | 1 |
-| Avg Confidence | 0.82 |
-| Escalated | 0 |
+### Security track (credential stuffing + lateral movement)
 
-The Investigation Results table shows the root cause, blast radius (api-gateway-01 secondary impact), and recommended action — all written autonomously by the agent.
+```bash
+# 1. Inject the attack scenario (72 events: brute-force → breach → SMB pivot)
+uv run symphunk load-sec-data
+
+# 2. Dispatch the security alert manually
+curl -sk -u admin:${SPLUNK_PASSWORD} -X POST \
+  "https://localhost:8089/services/saved/searches/symphunk_sec_demo/dispatch" \
+  -d "dispatch.now=true&force_dispatch=true&trigger_actions=1"
+
+# 3. Start the orchestrator (same command — routes automatically by agent_type)
+uv run symphunk run
+```
+
+Expected terminal output:
+```
+INFO  SecAgent starting incident=<id> severity=high   (185.220.101.45 — Tor exit node)
+INFO  SecAgent done incident=<id> status=Escalated threat_score=0.92
+INFO  SecAgent starting incident=<id> severity=medium  (10.0.1.50 — internal scanner)
+INFO  SecAgent done incident=<id> status=Resolved threat_score=0.78
+```
+
+Dashboard: **http://localhost:8000/en-US/app/search/symphunk_sec** — Threats: 2 · Auto-Blocked: 1 · Escalated: 1
+
+### Both tracks simultaneously
+
+Both `symphunk_obs_demo` and `symphunk_sec_demo` can be dispatched before a single `symphunk run` — the orchestrator picks up all `New` incidents and routes each to the correct agent automatically.
 
 ---
 
 ## CLI Reference
 
 ```bash
-uv run symphunk run                # Start orchestrator polling loop
-uv run symphunk seed               # Insert synthetic incident (testing)
-uv run symphunk load-sample-data   # Inject CPU-spike demo scenario into Splunk
-uv run symphunk deploy-alert       # Install alert action app + create saved search
-uv run symphunk deploy-dashboard   # Push Dashboard Studio definition to Splunk
-uv run symphunk kv-init            # (Re-)create the four KV Store collections
-uv run symphunk clean-incidents    # Delete incidents by status (default: New)
+# Orchestrator
+uv run symphunk run                   # Start polling loop — routes obs and sec incidents automatically
+
+# Observability track
+uv run symphunk load-sample-data      # Inject CPU-spike scenario (30 events → index=symphunk_demo)
+uv run symphunk deploy-alert          # Install alert action app + create symphunk_obs_demo saved search
+uv run symphunk deploy-dashboard      # Push Observability proof-of-work dashboard to Splunk
+
+# Security track
+uv run symphunk load-sec-data         # Inject attack scenario (72 events → index=symphunk_sec_demo)
+uv run symphunk deploy-sec-alert      # Create symphunk_sec_demo saved search
+uv run symphunk deploy-sec-dashboard  # Push Security proof-of-work dashboard to Splunk
+
+# Utilities
+uv run symphunk seed                  # Insert synthetic incident (testing/demo)
+uv run symphunk kv-init               # (Re-)create the four KV Store collections
+uv run symphunk clean-incidents       # Delete incidents by status (default: New)
 ```
 
 ---
@@ -163,24 +195,31 @@ symphunk/
     state.py                      # State machine: New→Investigating→Resolved/Escalated
   agents/
     base.py                       # Agent base class
-    obs_agent.py                  # ObsAgent: triage, correlate, evidence assembly
+    obs_agent.py                  # ObsAgent: metric triage, correlate, evidence assembly
+    sec_agent.py                  # SecAgent: IOC enrichment, lateral movement, threat score
   splunk/
     rest.py                       # REST 8089 client (httpx)
     kvstore.py                    # KV Store CRUD (batch_save upsert)
     hec.py                        # HEC event emit (HTTPS, Docker cert)
-    sample_data.py                # Deterministic CPU-spike demo scenario (30 events)
+    sample_data.py                # CPU-spike demo scenario (30 events → symphunk_demo)
+    sec_sample_data.py            # Attack scenario (72 events → symphunk_sec_demo)
     alert_setup.py                # REST helpers: conf reload, saved search creation
     alert_action/
       symphunk_alert_action/      # Splunk app: custom alert action
-        bin/symphunk_ingest.py    # Reads session_key from stdin, writes to KV
+        bin/symphunk_ingest.py    # Reads all result rows via results_file, batch-saves to KV
         default/alert_actions.conf
 skills/obs/
   anomaly-triage.md               # SPL templates for metric anomaly detection
   service-dependency.md           # Blast-radius and service correlation queries
   diagnostic-spl.md               # General-purpose diagnostic SPL + budget guidelines
+skills/sec/
+  ioc-triage.md                   # 3-step auth-anomaly → source enrichment → lateral movement
+  lateral-movement.md             # SMB pivot detection SPL + severity scoring
+  threat-intel.md                 # IP classification heuristics + threat score guide
 dashboards/
-  symphunk_obs.json               # Dashboard Studio definition (proof-of-work)
-tests/                            # 24 unit tests (no live Splunk required)
+  symphunk_obs.json               # Observability proof-of-work dashboard
+  symphunk_sec.json               # Security proof-of-work dashboard
+tests/                            # 38 unit tests (no live Splunk required)
 ```
 
 ---
@@ -227,11 +266,11 @@ uv run python smoke.py
 
 **Event**: [Splunk Agentic Ops Hackathon](https://splunk.devpost.com) — "Reimagine the future of agentic operations using Splunk AI"
 
-**Track**: Observability — anti-sprawl consolidation + AI Agent Monitoring narrative
+**Track**: Observability (primary) + Security (live demo) — anti-sprawl consolidation: two agent domains, one orchestrator
 
 **Required Splunk AI capabilities satisfied**:
-- Splunk MCP Server (the entire read tool backbone — 14 tools, every agent action)
-- SAIA AI Assistant (`saia_*` tools — used for novel SPL generation)
+- Splunk MCP Server (the entire read tool backbone — 14 tools, every agent action across both ObsAgent and SecAgent)
+- SAIA AI Assistant (`saia_*` tools — novel SPL generation for both metric and security investigations)
 - Splunk Developer License (10 GB/day) + Splunk AI Toolkit installed
 
 ---
