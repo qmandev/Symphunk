@@ -18,7 +18,7 @@ def cli() -> None:
 
 @cli.command()
 def run() -> None:
-    """Start the orchestrator polling loop."""
+    """Start the orchestrator polling loop (routes obs and sec incidents automatically)."""
     from symphunk.config import settings
     from symphunk.splunk.kvstore import KVStore
     from symphunk.harness.mcp_client import MCPClient
@@ -27,6 +27,7 @@ def run() -> None:
     from symphunk.harness.engine import Engine
     from symphunk.harness.budget import SearchBudget
     from symphunk.agents.obs_agent import ObsAgent
+    from symphunk.agents.sec_agent import SecAgent
     from symphunk.orchestrator.poller import Poller
     from symphunk.orchestrator.dispatcher import Dispatcher
 
@@ -35,16 +36,28 @@ def run() -> None:
         async with MCPClient(settings.mcp_url, settings.mcp_token) as mcp:
             registry = ToolRegistry()
             registry.from_mcp(mcp.tool_schemas())
-            skills = load_all("obs")
-            click.echo(f"MCP connected — {len(registry)} tools, {len(skills)} skills loaded")
+            obs_skills = load_all("obs")
+            sec_skills = load_all("sec")
+            click.echo(
+                f"MCP connected — {len(registry)} tools, "
+                f"{len(obs_skills)} obs skills, {len(sec_skills)} sec skills loaded"
+            )
 
             poller = Poller(kv)
             dispatcher = Dispatcher(kv)
 
-            def make_agent(incident: dict) -> ObsAgent:
+            def make_agent(incident: dict):
+                agent_type = incident.get("agent_type", "obs")
                 budget = SearchBudget(max_searches=settings.max_searches_per_run)
+                if agent_type == "sec":
+                    engine = Engine(
+                        mcp, registry, sec_skills,
+                        incident_id=incident.get("id", ""),
+                        budget=budget,
+                    )
+                    return SecAgent(incident, engine, kv)
                 engine = Engine(
-                    mcp, registry, skills,
+                    mcp, registry, obs_skills,
                     incident_id=incident.get("id", ""),
                     budget=budget,
                 )
@@ -242,6 +255,127 @@ def clean_incidents(status: str) -> None:
         await kv.aclose()
 
     asyncio.run(_clean())
+
+
+@cli.command("load-sec-data")
+def load_sec_data() -> None:
+    """Inject security attack scenario into index=symphunk_sec_demo and update the detection search."""
+    from symphunk.config import settings
+    from symphunk.splunk.rest import SplunkREST
+    from symphunk.splunk.sec_sample_data import ensure_index, inject
+
+    # Detection SPL: group auth events by src_ip; flag IPs with > 5 failures or any success after failures.
+    # Two incidents produced:
+    #   185.220.101.45 → severity=high (50 failures + 3 successes)
+    #   10.0.1.50      → severity=medium (15 failures, 0 successes)
+    _SEC_DETECTION_SPL = (
+        "index=symphunk_sec_demo earliest=-30m latest=now() event_type=authentication"
+        " | stats count(eval(action=\"failure\")) AS failures"
+        " count(eval(action=\"success\")) AS successes"
+        " values(dest_host) AS targets"
+        " BY src_ip"
+        " | where failures > 5 OR successes > 0"
+        " | eval title=\"Auth anomaly from \".src_ip,"
+        " severity=if(failures > 20 AND successes > 0, \"high\", \"medium\"),"
+        " description=failures.\" failures, \".successes.\" successes from \".src_ip,"
+        " agent_type=\"sec\""
+        " | fields title, severity, description, src_ip, agent_type, failures, successes"
+    )
+
+    async def _run() -> None:
+        rest = SplunkREST()
+        try:
+            await ensure_index(rest._client)
+            click.echo("Index symphunk_sec_demo ready")
+
+            count = await inject(settings.hec_token)
+            click.echo(f"Injected {count} security sample events (brute-force + lateral movement scenario)")
+
+            r = await rest._client.post(
+                f"https://{settings.splunk_host}:{settings.splunk_port}"
+                "/services/saved/searches/symphunk_sec_demo",
+                data={"search": _SEC_DETECTION_SPL, "output_mode": "json"},
+            )
+            if r.status_code in (200, 201):
+                click.echo("Updated symphunk_sec_demo to real auth-anomaly detection SPL")
+            else:
+                click.echo(f"Warning: saved search update returned {r.status_code}", err=True)
+        finally:
+            await rest.aclose()
+
+        click.echo(
+            "\nReady. To trigger a security investigation:\n"
+            "  1. Wait up to 5 min for the cron, OR manually dispatch:\n"
+            "     curl -sk -u admin:$SPLUNK_PASSWORD -X POST "
+            "https://localhost:8089/services/saved/searches/symphunk_sec_demo/dispatch"
+            " -d 'dispatch.now=true&force_dispatch=true&trigger_actions=1'\n"
+            "  2. symphunk run"
+        )
+
+    asyncio.run(_run())
+
+
+@cli.command("deploy-sec-alert")
+@click.option("--container", default="symphunk-splunk", help="Docker container name")
+def deploy_sec_alert(container: str) -> None:
+    """Create the symphunk_sec_demo saved search (requires alert action app already installed)."""
+    from symphunk.splunk.rest import SplunkREST
+    from symphunk.splunk.alert_setup import create_sec_saved_search
+
+    async def _setup() -> None:
+        rest = SplunkREST()
+        try:
+            await create_sec_saved_search(rest)
+            click.echo("Security saved search created: symphunk_sec_demo (cron: */5 * * * *)")
+            click.echo("Run 'symphunk load-sec-data' to inject sample events, then 'symphunk run'.")
+        finally:
+            await rest.aclose()
+
+    asyncio.run(_setup())
+
+
+@cli.command("deploy-sec-dashboard")
+def deploy_sec_dashboard() -> None:
+    """Push the security proof-of-work dashboard to Splunk."""
+    from symphunk.splunk.rest import SplunkREST
+
+    async def _deploy() -> None:
+        import httpx as _httpx
+        dash_path = Path(__file__).parent.parent / "dashboards" / "symphunk_sec.json"
+        if not dash_path.exists():
+            click.echo(f"Dashboard file not found: {dash_path}", err=True)
+            return
+
+        rest = SplunkREST()
+        json_def = dash_path.read_text()
+        eai_data = (
+            '<dashboard version="2" theme="dark">'
+            "<label>Symphunk — Security Proof-of-Work</label>"
+            "<description>Live evidence from Symphunk SecAgent investigations</description>"
+            f"<definition><![CDATA[{json_def}]]></definition>"
+            "</dashboard>"
+        )
+
+        try:
+            try:
+                await rest.post("/data/ui/views/symphunk_sec", {"eai:data": eai_data})
+                click.echo("Dashboard updated: symphunk_sec")
+            except _httpx.HTTPStatusError as exc:
+                body = exc.response.text
+                if exc.response.status_code in (404, 400) and "Could not find" in body:
+                    await rest.post(
+                        "/data/ui/views",
+                        {"name": "symphunk_sec", "eai:data": eai_data},
+                    )
+                    click.echo("Dashboard created: symphunk_sec")
+                else:
+                    click.echo(f"Deploy failed ({exc.response.status_code}): {body[:200]}", err=True)
+                    raise
+            click.echo("Open: http://localhost:8000/en-US/app/search/symphunk_sec")
+        finally:
+            await rest.aclose()
+
+    asyncio.run(_deploy())
 
 
 @cli.command("deploy-dashboard")

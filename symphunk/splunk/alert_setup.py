@@ -18,6 +18,16 @@ _DEMO_SPL = (
     ' description="Automated: high CPU utilization detected on web-frontend nodes"'
 )
 
+_SEC_SEARCH_NAME = "symphunk_sec_demo"
+# Placeholder SPL — load-sec-data replaces this with real detection SPL after injecting events.
+_SEC_SPL_PLACEHOLDER = (
+    "| makeresults"
+    ' | eval title="Auth anomaly detected",'
+    ' severity="medium",'
+    ' agent_type="sec",'
+    ' description="Placeholder: load-sec-data will replace this with real detection SPL"'
+)
+
 
 async def reload_alert_actions_conf(rest: SplunkREST) -> None:
     """Re-read alert_actions.conf from all apps without a Splunk restart."""
@@ -34,7 +44,7 @@ async def reload_alert_actions_conf(rest: SplunkREST) -> None:
 async def create_demo_saved_search(
     rest: SplunkREST, *, name: str = _DEMO_SEARCH_NAME
 ) -> None:
-    """Create the demo saved search that fires symphunk_ingest every 5 minutes."""
+    """Create the obs demo saved search that fires symphunk_ingest every 5 minutes."""
     data = {
         "name": name,
         "search": _DEMO_SPL,
@@ -54,5 +64,32 @@ async def create_demo_saved_search(
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 409:
             logger.info("Demo saved search already exists: %s", name)
+        else:
+            raise
+
+
+async def create_sec_saved_search(
+    rest: SplunkREST, *, name: str = _SEC_SEARCH_NAME
+) -> None:
+    """Create the security demo saved search that fires symphunk_ingest every 5 minutes."""
+    data = {
+        "name": name,
+        "search": _SEC_SPL_PLACEHOLDER,
+        "alert.track": "1",
+        "alert_type": "always",
+        "alert.suppress": "0",
+        "actions": "symphunk_ingest",
+        "action.symphunk_ingest": "1",
+        "cron_schedule": "*/5 * * * *",
+        "is_scheduled": "1",
+        "dispatch.earliest_time": "-30m",
+        "dispatch.latest_time": "now",
+    }
+    try:
+        await rest.post("/saved/searches", data)
+        logger.info("Sec demo saved search created: %s", name)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 409:
+            logger.info("Sec demo saved search already exists: %s", name)
         else:
             raise

@@ -1,0 +1,88 @@
+{
+  "title": "Symphunk — Security Proof-of-Work",
+  "description": "Live evidence from Symphunk's SecAgent: one orchestrator, many agents, one Splunk.",
+  "defaults": {
+    "dataSources": {
+      "ds.search": {
+        "options": {
+          "queryParameters": { "earliest": "-7d", "latest": "now" }
+        }
+      }
+    }
+  },
+  "dataSources": {
+    "ds_incidents": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:sec_evidence\" | eval Status=case(status==\"Resolved\",\"Resolved ✓\",status==\"Escalated\",\"Escalated ⚠\",1=1,status) | eval Score=round(threat_score,2) | rename title AS Title, severity AS Severity, src_ip AS \"Source IP\", recommended_action AS Action | eval Time=strftime(_time,\"%Y-%m-%d %H:%M:%S\") | table Time, Title, Severity, \"Source IP\", Status, Score, Action | sort - Time | head 20"
+      }
+    },
+    "ds_total": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:sec_evidence\" | stats count AS Threats"
+      }
+    },
+    "ds_blocked": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:sec_evidence\" status=Resolved | stats count AS \"Auto-Blocked\""
+      }
+    },
+    "ds_score": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:sec_evidence\" | stats avg(threat_score) AS s | eval \"Avg Score\"=round(s,2) | fields \"Avg Score\""
+      }
+    },
+    "ds_escalated": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:sec_evidence\" status=Escalated | stats count AS Escalated"
+      }
+    }
+  },
+  "visualizations": {
+    "viz_total": {
+      "type": "splunk.singlevalue",
+      "title": "Threats Investigated",
+      "dataSources": { "primary": "ds_total" },
+      "options": { "majorFontSize": 48, "backgroundColor": "transparent" }
+    },
+    "viz_blocked": {
+      "type": "splunk.singlevalue",
+      "title": "Auto-Blocked",
+      "dataSources": { "primary": "ds_blocked" },
+      "options": { "majorFontSize": 48, "backgroundColor": "transparent" }
+    },
+    "viz_score": {
+      "type": "splunk.singlevalue",
+      "title": "Avg Threat Score",
+      "dataSources": { "primary": "ds_score" },
+      "options": { "majorFontSize": 48, "backgroundColor": "transparent" }
+    },
+    "viz_escalated": {
+      "type": "splunk.singlevalue",
+      "title": "Escalated",
+      "dataSources": { "primary": "ds_escalated" },
+      "options": { "majorFontSize": 48, "backgroundColor": "transparent" }
+    },
+    "viz_incidents": {
+      "type": "splunk.table",
+      "title": "Investigation Results",
+      "dataSources": { "primary": "ds_incidents" },
+      "options": { "count": 20 }
+    }
+  },
+  "layout": {
+    "type": "grid",
+    "options": { "width": 1440, "gutterSize": 8, "columnCount": 24 },
+    "structure": [
+      { "item": "viz_total",      "position": {"x": 0,    "y": 0,   "w": 354, "h": 100} },
+      { "item": "viz_blocked",    "position": {"x": 362,  "y": 0,   "w": 354, "h": 100} },
+      { "item": "viz_score",      "position": {"x": 724,  "y": 0,   "w": 354, "h": 100} },
+      { "item": "viz_escalated",  "position": {"x": 1086, "y": 0,   "w": 354, "h": 100} },
+      { "item": "viz_incidents",  "position": {"x": 0,    "y": 108, "w": 1440,"h": 380} }
+    ]
+  }
+}
