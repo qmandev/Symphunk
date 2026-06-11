@@ -19,6 +19,7 @@ class KVStore:
         self._client = httpx.AsyncClient(
             verify=False,  # self-signed cert in Docker
             headers={"Authorization": f"Bearer {settings.splunk_token}"},
+            timeout=30.0,  # prevent ReadTimeout on stale connections after long MCP runs
         )
 
     async def init_collections(self) -> None:

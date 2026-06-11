@@ -257,6 +257,30 @@ def clean_incidents(status: str) -> None:
     asyncio.run(_clean())
 
 
+async def _ensure_hec_index(rest, index_name: str) -> None:
+    """Add index_name to the symphunk-hec token's allowed-indexes list if not already present."""
+    from symphunk.config import settings
+    # Splunk double-encodes the colon+slashes in the HEC token path
+    base = f"https://{settings.splunk_host}:{settings.splunk_port}"
+    path = "/servicesNS/nobody/launcher/data/inputs/http/http%3A%252F%252Fsymphunk-hec"
+    try:
+        r = await rest._client.get(f"{base}{path}?output_mode=json")
+        content = r.json().get("entry", [{}])[0].get("content", {})
+        current = content.get("indexes", [])
+        if isinstance(current, str):
+            current = [i.strip() for i in current.split(",") if i.strip()]
+        if index_name not in current:
+            new_indexes = ",".join(current + [index_name])
+            await rest._client.post(
+                f"{base}{path}",
+                data={"index": "main", "indexes": new_indexes, "output_mode": "json"},
+            )
+            click.echo(f"HEC token updated: added {index_name} to allowed indexes")
+    except Exception as exc:
+        click.echo(f"Warning: could not auto-update HEC token indexes ({exc}). "
+                   f"If injection fails, add '{index_name}' manually in Splunk Web → Settings → Data Inputs → HTTP Event Collector → symphunk-hec.", err=True)
+
+
 @cli.command("load-sec-data")
 def load_sec_data() -> None:
     """Inject security attack scenario into index=symphunk_sec_demo and update the detection search."""
@@ -287,6 +311,10 @@ def load_sec_data() -> None:
         try:
             await ensure_index(rest._client)
             click.echo("Index symphunk_sec_demo ready")
+
+            # Ensure the HEC token is authorised to write to this index.
+            # The original token was minted with a fixed allowed-indexes list; add symphunk_sec_demo if missing.
+            await _ensure_hec_index(rest, "symphunk_sec_demo")
 
             count = await inject(settings.hec_token)
             click.echo(f"Injected {count} security sample events (brute-force + lateral movement scenario)")

@@ -15,7 +15,8 @@ import urllib.request
 import uuid
 
 
-def _kv_batch_save(server_uri: str, session_key: str, record: dict) -> None:
+def _kv_batch_save(server_uri: str, session_key: str, records: list) -> None:
+    """Write one or more incident records to KV Store in a single batch_save call."""
     url = (
         f"{server_uri}/servicesNS/nobody/search"
         "/storage/collections/data/symphunk_incidents/batch_save"
@@ -25,7 +26,7 @@ def _kv_batch_save(server_uri: str, session_key: str, record: dict) -> None:
     ctx.verify_mode = ssl.CERT_NONE
     req = urllib.request.Request(
         url,
-        data=json.dumps([record]).encode(),
+        data=json.dumps(records).encode(),
         headers={
             "Authorization": f"Splunk {session_key}",
             "Content-Type": "application/json",
@@ -42,6 +43,43 @@ def _kv_batch_save(server_uri: str, session_key: str, record: dict) -> None:
         raise
 
 
+def _results_from_file(results_file: str) -> list[dict]:
+    """Read all result rows from the CSV results file Splunk provides."""
+    import csv
+    rows = []
+    try:
+        with open(results_file, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                rows.append(dict(row))
+    except Exception as exc:
+        sys.stderr.write(f"[symphunk_ingest] Could not read results_file: {exc}\n")
+    return rows
+
+
+def _make_incident(result: dict, search_name: str) -> dict:
+    severity = result.get("severity") or result.get("urgency") or "medium"
+    if severity not in ("low", "medium", "high", "critical"):
+        severity = "medium"
+    title = result.get("title") or search_name
+    description = result.get("description") or f"Alert fired: {search_name}"
+    agent_type = result.get("agent_type", "obs")
+    src_ip = result.get("src_ip", "")
+    key = str(uuid.uuid4())
+    return {
+        "_key": key,
+        "id": key,
+        "title": title,
+        "severity": severity,
+        "status": "New",
+        "description": description,
+        "source_search": search_name,
+        "agent_type": agent_type,
+        "src_ip": src_ip,
+        "alert_time": datetime.datetime.utcnow().isoformat() + "Z",
+        "raw_result": json.dumps(result),
+    }
+
+
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
@@ -52,36 +90,30 @@ def main() -> None:
     session_key = payload.get("session_key", "")
     server_uri = payload.get("server_uri", "https://localhost:8089")
     search_name = payload.get("search_name", "unknown")
-    result = payload.get("result", {})
 
     if not session_key:
         sys.stderr.write("[symphunk_ingest] No session_key in payload\n")
         sys.exit(1)
 
-    severity = result.get("severity") or result.get("urgency") or "medium"
-    if severity not in ("low", "medium", "high", "critical"):
-        severity = "medium"
+    # Prefer results_file (all rows) over result (first row only).
+    results_file = payload.get("results_file", "")
+    results = _results_from_file(results_file) if results_file else []
+    if not results:
+        result = payload.get("result", {})
+        results = [result] if result else []
 
-    title = result.get("title") or search_name
-    description = result.get("description") or f"Alert fired: {search_name}"
+    if not results:
+        sys.stderr.write("[symphunk_ingest] No results in payload\n")
+        sys.exit(0)
 
-    key = str(uuid.uuid4())
-    incident = {
-        "_key": key,
-        "id": key,
-        "title": title,
-        "severity": severity,
-        "status": "New",
-        "description": description,
-        "source_search": search_name,
-        "alert_time": datetime.datetime.utcnow().isoformat() + "Z",
-        "raw_result": json.dumps(result),
-    }
+    incidents = [_make_incident(r, search_name) for r in results]
+    _kv_batch_save(server_uri, session_key, incidents)
 
-    _kv_batch_save(server_uri, session_key, incident)
-    sys.stdout.write(
-        f"[symphunk_ingest] Incident created id={key} title={title!r} severity={severity}\n"
-    )
+    for inc in incidents:
+        sys.stdout.write(
+            f"[symphunk_ingest] Incident created id={inc['id']} "
+            f"title={inc['title']!r} severity={inc['severity']} agent_type={inc['agent_type']}\n"
+        )
 
 
 if __name__ == "__main__":
