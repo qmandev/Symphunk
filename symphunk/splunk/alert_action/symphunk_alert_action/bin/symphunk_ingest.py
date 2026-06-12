@@ -43,17 +43,23 @@ def _kv_batch_save(server_uri: str, session_key: str, records: list) -> None:
         raise
 
 
-def _results_from_file(results_file: str) -> list[dict]:
-    """Read all result rows from the CSV results file Splunk provides."""
-    import csv
-    rows = []
+def _results_from_api(server_uri: str, session_key: str, sid: str) -> list[dict]:
+    """Fetch all result rows for a search job via the REST API (JSON, all rows)."""
+    url = f"{server_uri}/services/search/v2/jobs/{sid}/results?output_mode=json&count=0"
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Splunk {session_key}"},
+    )
     try:
-        with open(results_file, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                rows.append(dict(row))
+        with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get("results", [])
     except Exception as exc:
-        sys.stderr.write(f"[symphunk_ingest] Could not read results_file: {exc}\n")
-    return rows
+        sys.stderr.write(f"[symphunk_ingest] Could not fetch results via API: {exc}\n")
+        return []
 
 
 def _make_incident(result: dict, search_name: str) -> dict:
@@ -95,9 +101,10 @@ def main() -> None:
         sys.stderr.write("[symphunk_ingest] No session_key in payload\n")
         sys.exit(1)
 
-    # Prefer results_file (all rows) over result (first row only).
-    results_file = payload.get("results_file", "")
-    results = _results_from_file(results_file) if results_file else []
+    # Fetch all result rows via REST API (handles Splunk's binary .srs.zst results_file).
+    # Fall back to the single-row `result` field if the API call fails.
+    sid = payload.get("sid", "")
+    results = _results_from_api(server_uri, session_key, sid) if sid else []
     if not results:
         result = payload.get("result", {})
         results = [result] if result else []

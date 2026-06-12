@@ -1,0 +1,88 @@
+{
+  "title": "Symphunk — Platform & Developer Experience",
+  "description": "Live evidence from Symphunk's DevExAgent: deployment regression analysis.",
+  "defaults": {
+    "dataSources": {
+      "ds.search": {
+        "options": {
+          "queryParameters": { "earliest": "-7d", "latest": "now" }
+        }
+      }
+    }
+  },
+  "dataSources": {
+    "ds_incidents": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:devex_evidence\" | eval Status=case(status==\"Resolved\",\"Resolved ✓\",status==\"Escalated\",\"Escalated ⚠\",1=1,status) | eval Confidence=round(confidence,2) | rename title AS Title, severity AS Severity, service AS Service, recommended_action AS Action | eval Time=strftime(_time,\"%Y-%m-%d %H:%M:%S\") | table Time, Title, Service, Severity, Status, Confidence, Action | sort - Time | head 20"
+      }
+    },
+    "ds_total": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:devex_evidence\" | stats count AS Deployments"
+      }
+    },
+    "ds_false_alarms": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:devex_evidence\" status=Resolved | stats count AS \"False Alarms\""
+      }
+    },
+    "ds_confidence": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:devex_evidence\" | stats avg(confidence) AS c | eval AvgConf=round(c*100) | fields AvgConf"
+      }
+    },
+    "ds_regressions": {
+      "type": "ds.search",
+      "options": {
+        "query": "search index=summary source=\"symphunk:devex_evidence\" status=Escalated | stats count AS Regressions"
+      }
+    }
+  },
+  "visualizations": {
+    "viz_total": {
+      "type": "splunk.singlevalue",
+      "title": "Deployments Analyzed",
+      "dataSources": { "primary": "ds_total" },
+      "options": { "majorFontSize": 48, "backgroundColor": "transparent" }
+    },
+    "viz_false_alarms": {
+      "type": "splunk.singlevalue",
+      "title": "False Alarms",
+      "dataSources": { "primary": "ds_false_alarms" },
+      "options": { "majorFontSize": 48, "backgroundColor": "transparent" }
+    },
+    "viz_confidence": {
+      "type": "splunk.singlevalue",
+      "title": "Avg Confidence",
+      "dataSources": { "primary": "ds_confidence" },
+      "options": { "majorFontSize": 48, "backgroundColor": "transparent", "unit": "%" }
+    },
+    "viz_regressions": {
+      "type": "splunk.singlevalue",
+      "title": "Regressions",
+      "dataSources": { "primary": "ds_regressions" },
+      "options": { "majorFontSize": 48, "backgroundColor": "transparent" }
+    },
+    "viz_incidents": {
+      "type": "splunk.table",
+      "title": "Deployment Analysis Results",
+      "dataSources": { "primary": "ds_incidents" },
+      "options": { "count": 20 }
+    }
+  },
+  "layout": {
+    "type": "grid",
+    "options": { "width": 1440, "gutterSize": 8, "columnCount": 24 },
+    "structure": [
+      { "item": "viz_total",        "position": {"x": 0,    "y": 0,   "w": 354, "h": 100} },
+      { "item": "viz_false_alarms", "position": {"x": 362,  "y": 0,   "w": 354, "h": 100} },
+      { "item": "viz_confidence",   "position": {"x": 724,  "y": 0,   "w": 354, "h": 100} },
+      { "item": "viz_regressions",  "position": {"x": 1086, "y": 0,   "w": 354, "h": 100} },
+      { "item": "viz_incidents",    "position": {"x": 0,    "y": 108, "w": 1440,"h": 380} }
+    ]
+  }
+}

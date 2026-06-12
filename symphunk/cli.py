@@ -28,6 +28,7 @@ def run() -> None:
     from symphunk.harness.budget import SearchBudget
     from symphunk.agents.obs_agent import ObsAgent
     from symphunk.agents.sec_agent import SecAgent
+    from symphunk.agents.dev_ex_agent import DevExAgent
     from symphunk.orchestrator.poller import Poller
     from symphunk.orchestrator.dispatcher import Dispatcher
 
@@ -38,9 +39,11 @@ def run() -> None:
             registry.from_mcp(mcp.tool_schemas())
             obs_skills = load_all("obs")
             sec_skills = load_all("sec")
+            devex_skills = load_all("devex")
             click.echo(
                 f"MCP connected — {len(registry)} tools, "
-                f"{len(obs_skills)} obs skills, {len(sec_skills)} sec skills loaded"
+                f"{len(obs_skills)} obs skills, {len(sec_skills)} sec skills, "
+                f"{len(devex_skills)} devex skills loaded"
             )
 
             poller = Poller(kv)
@@ -56,6 +59,13 @@ def run() -> None:
                         budget=budget,
                     )
                     return SecAgent(incident, engine, kv)
+                if agent_type == "devex":
+                    engine = Engine(
+                        mcp, registry, devex_skills,
+                        incident_id=incident.get("id", ""),
+                        budget=budget,
+                    )
+                    return DevExAgent(incident, engine, kv)
                 engine = Engine(
                     mcp, registry, obs_skills,
                     incident_id=incident.get("id", ""),
@@ -400,6 +410,128 @@ def deploy_sec_dashboard() -> None:
                     click.echo(f"Deploy failed ({exc.response.status_code}): {body[:200]}", err=True)
                     raise
             click.echo("Open: http://localhost:8000/en-US/app/search/symphunk_sec")
+        finally:
+            await rest.aclose()
+
+    asyncio.run(_deploy())
+
+
+@cli.command("load-devex-data")
+def load_devex_data() -> None:
+    """Inject deployment regression scenario into index=symphunk_devex_demo and update the detection search."""
+    from symphunk.config import settings
+    from symphunk.splunk.rest import SplunkREST
+    from symphunk.splunk.devex_sample_data import ensure_index, inject
+
+    # Detection SPL: find services with elevated error rates + a recent deployment event.
+    # Two incidents produced:
+    #   payment-service   → max_error_rate 8.4% > 3% threshold (severity=high)
+    #   notification-service → max_error_rate 5.0% > 3% threshold (severity=medium, false alarm)
+    _DEVEX_DETECTION_SPL = (
+        "index=symphunk_devex_demo earliest=-30m latest=now() event_type=service_metric"
+        " | stats avg(error_rate) AS avg_error_rate max(error_rate) AS max_error_rate"
+        " avg(latency_p99) AS avg_latency count AS event_count"
+        " BY service"
+        " | where max_error_rate > 0.03 AND event_count >= 3"
+        ' | eval title="Deployment regression check: ".service,'
+        ' severity=if(max_error_rate > 0.07, "high", "medium"),'
+        ' description="Error rate ".round(max_error_rate*100,1)."% detected on ".service." — checking for deploy correlation",'
+        ' agent_type="devex"'
+        " | fields title, severity, description, service, avg_error_rate, max_error_rate, avg_latency, agent_type"
+    )
+
+    async def _run() -> None:
+        rest = SplunkREST()
+        try:
+            await ensure_index(rest._client)
+            click.echo("Index symphunk_devex_demo ready")
+
+            await _ensure_hec_index(rest, "symphunk_devex_demo")
+
+            count = await inject(settings.hec_token)
+            click.echo(f"Injected {count} devex sample events (2 services: regression + false alarm)")
+
+            r = await rest._client.post(
+                f"https://{settings.splunk_host}:{settings.splunk_port}"
+                "/services/saved/searches/symphunk_devex_demo",
+                data={"search": _DEVEX_DETECTION_SPL, "output_mode": "json"},
+            )
+            if r.status_code in (200, 201):
+                click.echo("Updated symphunk_devex_demo to real deployment-regression detection SPL")
+            else:
+                click.echo(f"Warning: saved search update returned {r.status_code}", err=True)
+        finally:
+            await rest.aclose()
+
+        click.echo(
+            "\nReady. To trigger a devex investigation:\n"
+            "  1. Wait up to 5 min for the cron, OR manually dispatch:\n"
+            "     curl -sk -u admin:$SPLUNK_PASSWORD -X POST "
+            "https://localhost:8089/services/saved/searches/symphunk_devex_demo/dispatch"
+            " -d 'dispatch.now=true&force_dispatch=true&trigger_actions=1'\n"
+            "  2. symphunk run"
+        )
+
+    asyncio.run(_run())
+
+
+@cli.command("deploy-devex-alert")
+@click.option("--container", default="symphunk-splunk", help="Docker container name")
+def deploy_devex_alert(container: str) -> None:
+    """Create the symphunk_devex_demo saved search (requires alert action app already installed)."""
+    from symphunk.splunk.rest import SplunkREST
+    from symphunk.splunk.alert_setup import create_devex_saved_search
+
+    async def _setup() -> None:
+        rest = SplunkREST()
+        try:
+            await create_devex_saved_search(rest)
+            click.echo("DevEx saved search created: symphunk_devex_demo (cron: */5 * * * *)")
+            click.echo("Run 'symphunk load-devex-data' to inject sample events, then 'symphunk run'.")
+        finally:
+            await rest.aclose()
+
+    asyncio.run(_setup())
+
+
+@cli.command("deploy-devex-dashboard")
+def deploy_devex_dashboard() -> None:
+    """Push the Platform & Developer Experience proof-of-work dashboard to Splunk."""
+    from symphunk.splunk.rest import SplunkREST
+
+    async def _deploy() -> None:
+        import httpx as _httpx
+        dash_path = Path(__file__).parent.parent / "dashboards" / "symphunk_devex.json"
+        if not dash_path.exists():
+            click.echo(f"Dashboard file not found: {dash_path}", err=True)
+            return
+
+        rest = SplunkREST()
+        json_def = dash_path.read_text()
+        eai_data = (
+            '<dashboard version="2" theme="dark">'
+            "<label>Symphunk — Platform &amp; Developer Experience</label>"
+            "<description>Live evidence from Symphunk DevExAgent deployment regression analysis</description>"
+            f"<definition><![CDATA[{json_def}]]></definition>"
+            "</dashboard>"
+        )
+
+        try:
+            try:
+                await rest.post("/data/ui/views/symphunk_devex", {"eai:data": eai_data})
+                click.echo("Dashboard updated: symphunk_devex")
+            except _httpx.HTTPStatusError as exc:
+                body = exc.response.text
+                if exc.response.status_code in (404, 400) and "Could not find" in body:
+                    await rest.post(
+                        "/data/ui/views",
+                        {"name": "symphunk_devex", "eai:data": eai_data},
+                    )
+                    click.echo("Dashboard created: symphunk_devex")
+                else:
+                    click.echo(f"Deploy failed ({exc.response.status_code}): {body[:200]}", err=True)
+                    raise
+            click.echo("Open: http://localhost:8000/en-US/app/search/symphunk_devex")
         finally:
             await rest.aclose()
 
